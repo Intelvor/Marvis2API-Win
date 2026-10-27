@@ -1,11 +1,9 @@
-# Marvis2API
+# Marvis2API-Win
 
 把腾讯 **Marvis** 桌面助手的私有接口，封装成**标准 OpenAI 兼容网关**。
 
 本机装好并登录了 Marvis 客户端，就能用任意 OpenAI 客户端（Cherry Studio、ChatBox、NextChat、
 LangChain、OpenAI SDK……）调用它背后的模型，接口是标准 `/v1/chat/completions`。
-
-**只支持 Windows。** 无需 macOS、无需 dylib、无需抓包证书。
 
 ---
 
