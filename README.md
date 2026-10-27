@@ -9,6 +9,8 @@ LangChain、OpenAI SDK……）调用它背后的模型，接口是标准 `/v1/c
 
 ## 快速开始
 
+**不要双击运行，请在终端运行：**
+
 ```powershell
 # 1. 装依赖（Python 3.11+）
 python -m pip install -r requirements.txt
@@ -30,7 +32,8 @@ Base URL : http://127.0.0.1:4605/v1
 API Key  : 随便填
 Model    : main-auto
 ```
-
+> `main-auto` 是自动选择模型，也可以从模型列表指定某一模型。
+>
 > 详细的分步说明、排错对照表、风控排查见 [`WINDOWS-SETUP.md`](./WINDOWS-SETUP.md)。
 
 ---
@@ -53,8 +56,7 @@ Model    : main-auto
          https://yybadaccess.3g.qq.com/v1/chat/completions
 ```
 
-上游本身就是标准 OpenAI 协议（含 SSE、`tool_calls`、`file`/`image`），网关只做鉴权头拼装和原样透传，
-所以不会有格式转换损耗。
+上游本身就是标准 OpenAI 协议（含 SSE、`tool_calls`、`file`/`image`），网关只做鉴权头拼装和原样透传，所以不会有格式转换损耗。
 
 鉴权只有三层：
 
