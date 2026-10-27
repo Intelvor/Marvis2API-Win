@@ -1,0 +1,49 @@
+# Marvis Bridge 配置模板（Windows 版）
+# 复制为 config.toml 后填入凭证：
+#   .\tools\scan-token-admin.ps1      # 推荐：自动取 token 并写好配置
+#   或 .\set-credentials.ps1 -Openid xxx -Token mv_xxx -Guid xxx -Qimei36 xxx
+#
+# 注意：config.toml 含真实凭证，已被 .gitignore 忽略，不要提交或外发。
+
+[marvis]
+# 上游推理端点（标准 OpenAI 协议）
+base_url = "https://yybadaccess.3g.qq.com"
+chat_path = "/v1/chat/completions"
+
+# ---- 鉴权（由 tools\scan-token-admin.ps1 自动填写）----
+openid = "<YOUR_OPENID>"
+access_token = "<YOUR_mv_TOKEN>"
+login_type = "6"
+# 两个不同的设备标识：guid 是客户端实例 ID，qimei36 是 40 位设备指纹（Qimei SDK）
+device_guid = "<YOUR_DEVICE_GUID>"
+qimei36 = "<YOUR_QIMEI36>"
+
+# 固定 uskey（留空即可，运行时由 provider 每请求生成新值）
+uskey = ""
+
+# ---- 客户端指纹（Windows 客户端实测值，改了会被上游 4100404 风控拦下）----
+os_version = "Windows-10-10.0.26200"
+client_version = "1.60.2600.614"
+# Windows 版不发送 clientPlatform / clientPlatformVersion，留空即省略这两个字段
+client_platform = ""
+client_platform_version = ""
+# MarvisExt.reqScene：主对话 = 1
+req_scene = 1
+# X-Stainless-* UA 字段
+stainless_os = "Windows"
+stainless_arch = "x64"
+
+# ---- 默认模型（服务端自动路由）----
+default_model = "main-auto"
+
+# ---- 本地服务 ----
+host = "127.0.0.1"
+port = 4605
+
+# ---- uskey provider ----
+uskey_provider_host = "127.0.0.1"
+uskey_provider_port = 4607
+# uskey 前缀：Windows 客户端为 CsDVDCER（macOS 为 CiDVDCER）
+uskey_random_prefix = "CsDVDCER"
+
+debug = true
