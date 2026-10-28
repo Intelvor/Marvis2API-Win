@@ -1,0 +1,20 @@
+# 运行时生成的文件
+*.log
+*.err.log
+*.pid
+
+# 配置文件（包含敏感凭证）
+config.toml
+
+# 扫描结果
+tools/token-scan.txt
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+.cursor/
