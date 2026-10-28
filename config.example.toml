@@ -37,8 +37,19 @@ stainless_arch = "x64"
 default_model = "main-auto"
 
 # ---- 本地服务 ----
+# host = "127.0.0.1"   仅本机可访问（默认，最安全）
+# host = "0.0.0.0"     监听全部网卡，局域网内其它设备可访问（必须配置 api_key）
 host = "127.0.0.1"
 port = 4605
+
+# ---- 访问密钥 ----
+# 客户端调用时带上：Authorization: Bearer <api_key>（也兼容 x-api-key: <api_key>）
+# 留空 = 不启用密钥，此时仅允许 127.0.0.1 访问；若 host 设为 0.0.0.0 会拒绝启动。
+# 生成方法：python -c "import secrets; print(secrets.token_urlsafe(32))"
+api_key = ""
+# 为 true 时本机回环请求免密钥（本地脚本/验收无需带 key）；对局域网设备的请求一律校验。
+# 需要最严格管控时设为 false，此时连本机也必须带密钥。
+trust_loopback = true
 
 # ---- uskey provider ----
 uskey_provider_host = "127.0.0.1"

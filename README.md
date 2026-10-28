@@ -38,6 +38,34 @@ Model    : main-auto
 
 ---
 
+## 局域网访问
+
+默认只监听本机。要让同网段的其它设备（手机 / 另一台电脑 / NAS）调用，改 `config.toml`：
+
+```toml
+host = "0.0.0.0"          # 监听全部网卡
+api_key = "你的访问密钥"    # 必填，否则拒绝启动
+trust_loopback = true     # 本机请求免密钥，本地脚本照常用
+```
+
+生成密钥：`python -c "import secrets; print(secrets.token_urlsafe(32))"`
+
+重启后其它设备用：
+
+```
+Base URL : http://<本机局域网IP>:4605/v1
+API Key  : 上面生成的访问密钥
+```
+
+网关认 `Authorization: Bearer <key>`，也兼容 `x-api-key: <key>`。除 `/health`（探活，不含凭证）外
+所有接口都要密钥——`/uskey` 会回显 openid 与 token 尾部，同样受保护。
+
+**安全边界**：`host = "0.0.0.0"` 且 `api_key` 为空时 bridge 直接拒绝启动（`exit 1`）。
+网关用的是本机 Marvis 登录态，无密钥对局域网开放等于把账号借出去：烧你的额度，密集请求还会触发
+账号级风控 `4100404`。公网暴露请自行套 TLS 反向代理。详见 `WINDOWS-SETUP.md` 的「四·五」节。
+
+---
+
 ## 它是怎么工作的
 
 ```

@@ -90,9 +90,30 @@ Write-Host ''
 Write-Host '  OpenAI base URL : http://127.0.0.1:4605/v1'
 Write-Host '  uskey provider  : http://127.0.0.1:4607/uskey'
 Write-Host ("  bridge health   : uskey_source={0} uskey_live={1}" -f $health.uskey_source, $health.uskey_live)
+
+# 监听范围与访问密钥状态：局域网暴露后没密钥等于把本机凭证借给同网段所有人
+$cfgTextForCheck = Get-Content (Join-Path $Root 'config.toml') -Raw -Encoding UTF8
+$listenHost = $null
+if ($cfgTextForCheck -match '(?m)^\s*host\s*=\s*"([^"]*)"') { $listenHost = $Matches[1] }
+$hasKey = $cfgTextForCheck -match '(?m)^\s*api_key\s*=\s*"[^"]+"'
+
+if ($listenHost -and $listenHost -notin @('127.0.0.1', 'localhost', '::1')) {
+    $lip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+        Select-Object -First 1 -ExpandProperty IPAddress)
+    Write-Host ("  局域网监听      : {0}  (http://{1}:4605/v1)" -f $listenHost, $(if ($lip) { $lip } else { '<本机IP>' })) -ForegroundColor Yellow
+    if ($hasKey) {
+        Write-Host '  访问密钥        : 已启用（客户端需带 Authorization: Bearer <api_key>）' -ForegroundColor Green
+    } else {
+        Write-Host '  [!] host 已对外开放但 api_key 为空，bridge 会拒绝启动。请先在 config.toml 配置 api_key。' -ForegroundColor Red
+    }
+} else {
+    Write-Host '  监听范围        : 仅本机 (127.0.0.1)'
+    if ($hasKey) { Write-Host '  访问密钥        : 已启用（可改为 host = "0.0.0.0" 供局域网使用）' }
+}
 Write-Host ''
 
-$cfgText = Get-Content (Join-Path $Root 'config.toml') -Raw -Encoding UTF8
+$cfgText = $cfgTextForCheck
 if ($cfgText -match '<YOUR_') {
     Write-Host '[deploy] 提醒：config.toml 里仍有占位凭证，未替换前调用会被上游 401 拒绝。' -ForegroundColor Yellow
     Write-Host '         自动填写: .\tools\scan-token-admin.ps1   （会弹 UAC）' -ForegroundColor Yellow

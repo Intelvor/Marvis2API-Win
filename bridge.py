@@ -13,7 +13,9 @@ Marvis Bridge — 把腾讯 Marvis 桌面助手的私有 OpenAI 兼容接口，�
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import socket
 import sys
 import time
 import uuid
@@ -37,6 +39,67 @@ CFG: dict[str, Any] = {}
 
 # 缓存的最近一次 uskey（provider 不可达时兜底；uskey 每请求一变）
 LIVE: dict[str, str | None] = {"uskey": None, "updated_at": None}
+
+# 回环地址集合：来自这些 peer 的请求默认视为本机，可免密钥
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+# 免鉴权路径（仅存活探测，不含任何凭证信息）
+PUBLIC_PATHS = {"/health"}
+
+
+def _is_loopback(host: str | None) -> bool:
+    """判断地址是否为回环。host 可以是监听地址（0.0.0.0 / ::）或请求 peer IP。"""
+    if not host:
+        return False
+    h = host.strip().strip("[]").lower()
+    return h in LOOPBACK_HOSTS or h.startswith("127.")
+
+
+def _extract_key(request: Request) -> str | None:
+    """取客户端提交的密钥：兼容 OpenAI 的 Bearer 与 Anthropic 风格的 x-api-key。"""
+    auth = request.headers.get("authorization") or ""
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return request.headers.get("x-api-key")
+
+
+def _unauthorized(msg: str) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"message": msg, "type": "invalid_request_error", "code": "invalid_api_key"}},
+        status_code=401,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    """访问密钥校验。
+
+    - 配置了 api_key：除 /health 外一律校验；trust_loopback 为真时本机回环免验（方便本地验收脚本）。
+    - 未配置 api_key：只允许回环访问（监听局域网时启动阶段已拒绝无密钥启动）。
+    """
+    cfg = CFG.get("marvis", {})
+    expected = (cfg.get("api_key") or "").strip()
+    path = request.url.path
+
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    peer = request.client.host if request.client else None
+    if not expected:
+        if _is_loopback(peer):
+            return await call_next(request)
+        return _unauthorized("本网关未配置 api_key，仅接受本机访问。")
+
+    if cfg.get("trust_loopback", True) and _is_loopback(peer):
+        return await call_next(request)
+
+    got = _extract_key(request)
+    if not got:
+        return _unauthorized("缺少访问密钥。请在 Authorization: Bearer <key> 或 x-api-key 中提供。")
+    if not hmac.compare_digest(got, expected):
+        return _unauthorized("访问密钥不正确。")
+    return await call_next(request)
+
 
 
 # ---------------------------------------------------------------- config
@@ -226,13 +289,16 @@ def _to_openai_response(resp: httpx.Response) -> JSONResponse:
 
 @app.get("/health")
 async def health():
+    cfg = CFG["marvis"]
     return {
         "status": "ok",
-        "upstream": CFG["marvis"]["base_url"] + CFG["marvis"]["chat_path"],
+        "upstream": cfg["base_url"] + cfg["chat_path"],
         "uskey_source": "provider",
         "uskey_live": bool(LIVE["uskey"]),
         "uskey_len": len(LIVE["uskey"] or "") if LIVE["uskey"] else None,
         "uskey_updated_at": LIVE["updated_at"],
+        "auth_required": bool((cfg.get("api_key") or "").strip()),
+        "listen": f"{cfg.get('host', '127.0.0.1')}:{cfg.get('port', 4605)}",
     }
 
 
@@ -251,6 +317,36 @@ async def uskey_status():
 
 
 # ---------------------------------------------------------------- main
+def validate_listen(config: dict[str, Any], host: str) -> None:
+    """启动前校验：监听非回环地址时必须配置 api_key，否则直接拒绝启动。
+
+    这是 fail-fast：一旦对外暴露又没有密钥，同网段任何人都能带着本机的
+    access_token 打上游、烧额度甚至触发账号风控，因此在启动阶段就拦下。
+    """
+    m = config.get("marvis", {})
+    key = (m.get("api_key") or "").strip()
+    if _is_loopback(host):
+        return
+    if not key:
+        raise SystemExit(
+            f"[bridge] 拒绝启动：监听地址 {host} 已超出本机范围，但 config.toml 未配置 api_key。\n"
+            f"         请在 [marvis] 段加入 api_key = \"你的密钥\"，或改回 host = \"127.0.0.1\"。"
+        )
+    if len(key) < 16:
+        print(f"[bridge] 警告：api_key 长度仅 {len(key)}，建议使用 32 位以上随机串。",
+              file=sys.stderr, flush=True)
+
+
+def local_ip_hint() -> str | None:
+    """取本机在局域网中的出口 IP，用于启动提示。失败不影响运行。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))  # 不实际发包，只为拿到出口网卡地址
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 def main():
     global CFG
     ap = argparse.ArgumentParser(description="Marvis Bridge")
@@ -262,12 +358,18 @@ def main():
     CFG = load_config(Path(args.config))
     host = args.host or CFG["marvis"]["host"]
     port = args.port or int(CFG["marvis"]["port"])
+    validate_listen(CFG, host)
 
+    has_key = bool((CFG["marvis"].get("api_key") or "").strip())
     print(f"[bridge] Marvis Bridge on http://{host}:{port}/v1")
     print(f"[bridge] upstream = {CFG['marvis']['base_url']}{CFG['marvis']['chat_path']}")
     print(f"[bridge] uskey provider = "
           f"{CFG['marvis'].get('uskey_provider_host', '127.0.0.1')}:"
           f"{CFG['marvis'].get('uskey_provider_port', 4607)}")
+    print(f"[bridge] access key = {'已启用' if has_key else '未配置（仅本机可用）'}")
+    if not _is_loopback(host):
+        lip = local_ip_hint()
+        print(f"[bridge] 局域网地址 = http://{lip or '<本机IP>'}:{port}/v1（需带访问密钥）")
 
     import uvicorn
     uvicorn.run(app, host=host, port=port, log_level="warning")

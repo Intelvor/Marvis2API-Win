@@ -114,6 +114,95 @@ curl -s http://127.0.0.1:4605/v1/chat/completions `
 
 ---
 
+## 四·五、局域网访问（可选）
+
+默认只监听 `127.0.0.1`，只有本机能用。要让同一局域网内的手机、另一台电脑、NAS 也能调，
+需要改两个配置——**这两项必须一起改**。
+
+### 第一步：生成访问密钥
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+复制输出的一整串（约 43 字符）。
+
+### 第二步：改 config.toml
+
+在 `[marvis]` 段把 `host` 改成 `0.0.0.0`，并把密钥填进 `api_key`：
+
+```toml
+host = "0.0.0.0"
+api_key = "刚才生成的那一串"
+trust_loopback = true
+```
+
+### 第三步：重启
+
+```powershell
+.\undeploy.ps1 ; .\deploy.ps1
+```
+
+启动日志会打印局域网地址：
+
+```
+[bridge] access key = 已启用
+[bridge] 局域网地址 = http://192.168.1.23:4605/v1（需带访问密钥）
+```
+
+### 第四步：其它设备这样填
+
+```
+Base URL : http://192.168.1.23:4605/v1
+API Key  : 刚才生成的密钥
+Model    : main-auto
+```
+
+> 客户端里那个 "API Key" 输入框就是访问密钥，填进去即可——网关认
+> `Authorization: Bearer <key>`，也兼容 `x-api-key: <key>`。
+
+命令行验证（在**另一台**机器上执行）：
+
+```powershell
+curl -s -H "Authorization: Bearer 你的密钥" http://192.168.1.23:4605/v1/models
+```
+
+不带密钥会返回 `401` 与 `invalid_api_key`。
+
+### 两个参数的含义
+
+| 配置项 | 值 | 行为 |
+|---|---|---|
+| `api_key` | 空 | 不启用密钥，仅允许 `127.0.0.1` 访问 |
+| `api_key` | 非空 | 除 `/health` 外所有接口都校验密钥 |
+| `host` | `127.0.0.1` | 仅本机（默认） |
+| `host` | `0.0.0.0` | 监听全部网卡，局域网可达 |
+| `trust_loopback` | `true` | 本机回环请求免密钥，本地脚本照常能用 |
+| `trust_loopback` | `false` | 连本机也必须带密钥，管控最严 |
+
+### 三条底线
+
+1. **`host = "0.0.0.0"` 而 `api_key` 为空时，bridge 直接拒绝启动**（`exit 1`）。
+   这是有意为之：网关用的是本机的 Marvis 登录态，没密钥对局域网开放等于把账号借给同网段所有人——
+   别人调用烧的是你的额度，密集请求还会触发账号级风控 `4100404`。
+2. `/health` 不校验密钥（内容只有存活状态与监听地址，不含任何凭证），方便探活；
+   `/uskey` 会回显 openid 与 token 尾部，因此它**受密钥保护**，不是公开接口。
+3. 公网暴露不在支持范围内。若确需跨网访问，请自行套一层 TLS 反向代理（Caddy / Nginx），
+   否则密钥在局域网里是明文传输的。
+
+### 防火墙
+
+首次监听 `0.0.0.0` 时 Windows 会弹网络访问提示，勾选「专用网络」允许即可。也可手工放行：
+
+```powershell
+New-NetFirewallRule -DisplayName "Marvis Bridge 4605" -Direction Inbound `
+  -Protocol TCP -LocalPort 4605 -Action Allow -Profile Private
+```
+
+> 只对「专用网络」放行。别在公共 Wi-Fi 上开这个端口。
+
+---
+
 ## 五、日常维护
 
 ```powershell
