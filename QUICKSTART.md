@@ -43,4 +43,4 @@ To auto-start the service on login, use Windows Task Scheduler:
 3. Trigger: "At log on"
 4. Action: "Start a program"
 5. Program: `powershell.exe`
-6. Arguments: `-ExecutionPolicy Bypass -File "D:\Marvis2API-Win\start.ps1"`
+6. Arguments: `-ExecutionPolicy Bypass -File "<repo-path>\start.ps1"` （把 `<repo-path>` 换成项目的实际绝对路径）
