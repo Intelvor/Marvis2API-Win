@@ -57,3 +57,9 @@ tools/a-req.json
 tools/hub.log
 tools/hub-stats.json
 tools/h-req.json
+
+# 一键脚本运行时日志
+tools/auto.serve.log
+tools/auto.serve.err.log
+tools/hub.err.log
+tools/qs.json

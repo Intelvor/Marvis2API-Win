@@ -493,6 +493,80 @@ python tools/marvis_hub.py
 | CDP 未开启 | info | 说明不影响对话，只影响自动续期 |
 | 一切正常 | ok | 不显示提示 |
 
+---
+
+## 十一、一键启动 / 停止
+
+根目录两个脚本，把整条链路串起来。
+
+### `start.ps1`
+
+```powershell
+.\start.ps1              # 正常启动（已运行的部分会跳过）
+.\start.ps1 -Restart     # 强制重启客户端与服务
+.\start.ps1 -NoUI        # 不自动打开浏览器
+```
+
+流程（6 步，每步都有状态输出）：
+
+1. **自提权** —— Frida 注入必须管理员，脚本检测到非管理员会自动 `RunAs`
+2. **检查环境** —— Python、Marvis.exe、config.toml 是否齐备
+3. **准备客户端** —— 已在运行但没开 CDP 时会重启客户端；
+   启动后轮询 9222 最多 40 秒，再等 MarvisAgent 进程出现
+4. **启动注入通道** —— 起 `marvis_auto.py`（4512）。
+   若 4512 被 **MarvisAgent 自己**占用，判定为上轮注入残留，
+   自动重启 Agent 以加载当前代码（这个判断很关键，见下）
+5. **启动面板** —— 起 `marvis_hub.py`（4800）
+6. **凭证初始化** —— 未就绪时调 `/api/ping` 用 CDP 自动发一条消息，
+   再轮询 20 秒等凭证被捕获；失败则明确提示去客户端手动发
+
+最后打印汇总表（三个端口 + 凭证状态），并自动打开面板。
+
+### `stop.ps1`
+
+```powershell
+.\stop.ps1          # 只停面板与通道
+.\stop.ps1 -Deep    # 同时重启 MarvisAgent，清除 Frida 注入
+```
+
+**必须提权**：`MarvisAgent` 以 SYSTEM 权限运行，普通权限的
+`Stop-Process` / `taskkill` 会被拒绝（`拒绝访问`）。脚本会自动 `RunAs`。
+
+### 实测
+
+从完全干净的状态（4512/4800 无监听，MarvisAgent 无注入）执行：
+
+```
+.\start.ps1 -NoUI
+
+[1] 检查环境      OK
+[2] 准备客户端    OK
+[3] 启动注入通道  OK  127.0.0.1:4512
+[4] 启动面板      OK  http://127.0.0.1:4800
+[5] 检查凭证      OK  resp_987e1c5307834a0a8fe43
+[6] 就绪          三个端口全部 OK
+```
+
+全程只需点一次 UAC「是」。之后：
+
+```
+POST http://127.0.0.1:4800/v1/chat/completions
+{"model":"main-auto","messages":[{"role":"user","content":"只回答：一键启动成功"}]}
+→ {"content":"一键启动成功"}
+
+GET http://127.0.0.1:4800/v3/marvis_get_wallet
+→ {"code":0,"data":{"avail_tokens":"9739760",...}}
+```
+
+### 踩过的坑（已写进脚本）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `stop.ps1` 杀不掉 MarvisAgent，提示「拒绝访问」 | Agent 以 SYSTEM 运行 | 脚本自动提权 |
+| 端口在监听但代码是旧的 | 上轮注入残留占着 4512 | 检测占用者是否 MarvisAgent，是则重启 Agent |
+| 注入后行为异常 / `RecursionError` | 多次注入导致 `_marvis_orig_send` 被覆盖 | 同上，重启是唯一可靠解法 |
+
+
 
 `tools/marvis_auto.py`，端口 **4512**：
 
