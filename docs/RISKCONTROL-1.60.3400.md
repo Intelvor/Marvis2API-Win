@@ -374,8 +374,53 @@ curl -X POST http://127.0.0.1:4891/v1/chat/completions \
 
 ### 凭证过期怎么办
 
-`Marvis-Response-ID` 可能随会话过期。失效表现为重新返回 403，
-此时在客户端发一条消息刷新凭证即可（`mfree-tpl.json` 会自动更新）。
+`Marvis-Response-ID` 的实测寿命：**约 3 次调用**（不是时间，是次数）。
+
+已实现自动续期，见下面第九节。
+
+---
+
+## 九、全自动服务（体感 = 普通 API）
+
+`tools/marvis_auto.py`，端口 **4512**：
+
+```bash
+# 一次性启动（注入 + 起服务 + 开 watchdog）
+tools/auto-start-admin.ps1
+
+# 之后就是普通 OpenAI 接口
+curl -X POST http://127.0.0.1:4512/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"main-auto","messages":[{"role":"user","content":"你好"}]}'
+```
+
+### 自愈机制
+
+凭证约 3 次调用失效。失效时：
+
+1. 服务检测到 403，置位 `auto-need-refresh.flag`
+2. watchdog 线程发现标记 → 调 CDP 在客户端自动发一条消息
+3. 注入钩子捕获新凭证写入 `auto-tpl.json`、清掉标记
+4. 服务重试原请求（最多 3 次）
+
+全过程调用方无感知。
+
+**实测：12 次连续调用，3 次自动刷新、3 次重试，最终 12/12 全部 200，零人工介入。**
+
+### 与裸模型 API 的真实差距
+
+| 项 | 状态 |
+|---|---|
+| 请求格式 | 完全兼容 OpenAI（messages / tools / tool_choice 透传） |
+| 响应格式 | 标准 `choices[].message`，含 `reasoning_content` |
+| 调用方式 | 纯 HTTP，可重复，可并发 |
+| 需人工介入 | 仅首次 bootstrap 发一条消息 |
+| **模型选择** | **不能指定**，只认 `main-auto`（服务端动态路由） |
+| 自动刷新副作用 | 每次刷新会在客户端留一条 `.` 消息，可能轻微影响同会话上下文 |
+
+**最关键的限制**：`main-auto` 是服务端动态路由，同一个标识可能路由到不同模型
+（实测连续问「你的模型名」，一次答「通义千问」、一次返回 `hy3` 混元）。
+显式指定 `hy3` / `deepseek-v4-pro-external` 等真实模型名一律 403。
 
 
 **Marvis 桥接器：`tools/marvis_bridge.py`**

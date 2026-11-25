@@ -45,3 +45,10 @@ tools/free-tpl.json
 tools/free-*.log
 tools/probe*-*.txt
 tools/mf-req*.json
+
+# 全自动服务运行时产物
+tools/auto-tpl.json
+tools/auto-cap.jsonl
+tools/auto-need-refresh.flag
+tools/auto.*.log
+tools/a-req.json
