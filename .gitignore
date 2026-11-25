@@ -5,9 +5,17 @@
 
 # 配置文件（包含敏感凭证）
 config.toml
+config.toml.bak
+config.toml.local-bak
+.env
+*.secret
 
-# 扫描结果
+# 扫描 / 抓取结果（含 token、uskey 明文）
 tools/token-scan.txt
+tools/header-dump.txt
+tools/ual-real-headers.txt
+tools/*-dump.txt
+tools/*-raw.txt
 
 # Python 缓存
 __pycache__/
