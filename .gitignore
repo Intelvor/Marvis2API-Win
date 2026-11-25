@@ -16,6 +16,9 @@ tools/header-dump.txt
 tools/ual-real-headers.txt
 tools/*-dump.txt
 tools/*-raw.txt
+tools/full-body.bin
+tools/*.jsonl
+tools/api-template.json
 
 # Python 缓存
 __pycache__/
