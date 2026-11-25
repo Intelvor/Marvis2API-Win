@@ -181,21 +181,92 @@ MarvisHost.exe (Rust, PID 12712)
 | 8 | **在 MarvisAgent 进程内**用它的 httpx 发送 | 403 |
 | 9 | 先发 `memory`（reqScene=1）再发 `agent_chat`（reqScene=0） | 两步都 403 |
 | 10 | 大 body（15KB，模拟真实 8834 字节结构 + 18 个工具定义） | 403 |
+| 11 | 劫持 `httpx.AsyncClient.send`，借客户端**同一个 client 实例**、在它 `send()` 的同一时刻发出 | 403 |
+| 12 | 中继时用**当前活请求的请求头**（uskey / nonce 新鲜） | 403 |
+| 13 | 中继时现场重新生成 uskey（`beacon_wrapper.dll`） | 403 |
+| 14 | 中继时刷新 `Marvis-Response-ID` / `Ual-Access-Requestid` | 403 |
+| 15 | **就地替换**客户端正在发出的请求体（不动头、不动连接） | **200** ✅ |
 
-第 8 项是关键：**在进程内、用它自己的 TLS 栈发，仍然被拦**。
-第 10 项也是关键：响应 0.46 秒，说明 body 内容根本没被解析。
+第 8 项：在进程内、用它自己的 TLS 栈发，仍然被拦。
+
+第 11-14 项：中继方式——同一个 client 实例、同一连接池、同一 TLS、活请求头、新 uskey、新 ID，全部 403。而同一时刻同一 client 上，客户端自己的 105940 字节请求返回 200。
+
+第 15 项是唯一成功的一条，也是结论的钥匙：**把请求体就地换掉，请求头和连接完全不动，返回 200。**
+
+结论：风控校验的不是请求头、连接、TLS、uskey 或 body 内容，而是**请求对象本身的连续性**。腾讯在 TLS 之下埋了一个只能由客户端自身产生的发送连续性凭据（发送序列号 / 请求计数器强绑定），新起的请求拿不到它。
 
 ---
 
-## 五、判定
+## 四之二、唯一可用路径：请求体就地替换
 
-拦截不在请求内容层，而在**通道身份层**。官方客户端的 chat 流量实际走
-`sctun` 隧道 → TRPC/IPv6，隧道握手时携带的身份是 HTTP 头里不存在的。
-`yybadaccess` 的 HTTP 端点对"非隧道来源"一律风控，是腾讯刻意封堵直连。
+`tools/inject_body.py` 已验证可用：
 
-要真正绕过，需逆向 `MarvisSvr.exe` 的 `sctun` 隧道握手协议
-（涉及 `wss_plugin.dll`、`client_extension_v2.dll`、`PocoNetSSL.dll`）。
-工作量与成功率都不乐观。
+```python
+# 劫持 AsyncClient.send，在请求发出前把 body 换成我们的内容，
+# Content-Length 必须同步更新（否则 httpx 抛 LocalProtocolError）。
+async def send_patched(self, request, **kwargs):
+    if "/v1/chat/completions" in str(request.url) and REPL.exists():
+        nb = REPL.read_bytes()
+        h = dict(request.headers)
+        h.pop("content-length", None)
+        h.pop("Content-Length", None)
+        h["content-length"] = str(len(nb))
+        request = httpx.Request(request.method, request.url,
+                                headers=h, content=nb)
+    return await orig(self, request, **kwargs)
+```
+
+实测：写入 104 字节的
+`{"model":"main-auto","messages":[{"role":"user","content":"只回复两个字：收到"}],"stream":true}`
+后客户端发消息，返回 200，界面显示"收到"。
+
+**代价**：每次都必须有一次真实的客户端发消息动作来搭载，不能随时调用。
+
+### 完整请求结构（从真实 105499 字节 body 提取）
+
+```json
+{
+  "messages": [ {"role":"system","content":"...(23130 字)"},
+                {"role":"user","content":"...(4381 字)"},
+                {"role":"user","content":"...(136 字)"} ],
+  "model": "main-auto",
+  "max_tokens": 32000,
+  "stream": true,
+  "stream_options": {"include_usage": true},
+  "temperature": 1,
+  "tools": [ ...29 个函数定义... ],
+  "thinking_enabled": true
+}
+```
+
+29 个工具：`read_text, write_file, edit_file, delete, shell_executor, use_skill,
+python_executor, search_tool, search_skill, search_history, dispatch_task,
+present_result, declare_products, declare_op_cards, query_card_evidences,
+create_scheduled_task, modify_scheduled_task, ask_user, save_memory,
+update_user_persona, get_user_persona, get_location, web_search, web_fetch,
+game_kb_search, create_custom_model, analyze_image, invoke_mcp_tool, list_mcp_tools`
+
+
+---
+
+## 五、判定（修订）
+
+初版判定写成"走 `sctun` 隧道"，这是**错的**，已被实验推翻：hook `ws2_32!connect`
+显示 MarvisAgent 的唯一外部连接就是 `127.0.0.1:7897`（Clash 系统代理），
+chat 流量经代理直发 `yybadaccess.3g.qq.com`，与 `sctun` 无关。
+`MarvisSvr` 只承载心跳与 TRPC 控制面（日志里只见 `this is a pong from me`）。
+
+修正后的判定：拦截在**请求对象的连续性**上。不是通道、不是 TLS 指纹、
+不是请求头、不是 uskey、不是 body 内容——这些全部单独隔离验证过（见第四节）。
+
+决定性对照：同一 client 实例、同一连接池、同一 TLS 会话、活请求头、
+现场新生成的 uskey、刷新过的 requestid，新起一个请求 → 403；
+而把客户端**正在发出的那个请求的 body 就地换掉** → 200。
+
+结论：腾讯在 TLS 之下埋了一个只能由客户端自身产生的发送连续性凭据
+（发送序列号 / 请求计数的强绑定），新起的请求无论如何构造都拿不到它。
+
+**这解释了为什么文档初版把所有能想到的请求层要素都试遍了仍然 403。**
 
 ---
 
@@ -217,6 +288,11 @@ MarvisHost.exe (Rust, PID 12712)
 | `tools/proxy-restore-admin.ps1` | 还原系统代理 + 移除 mitm 根证书 | 是 |
 | `tools/chat-request-raw.txt` | 抓到的真实请求头原文 | — |
 | `tools/ual-real-headers.txt` | MitM 抓到的完整请求序列 | — |
+| **`tools/inject_body.py`** | **请求体就地替换（唯一验证可用的一条）** | 是 |
+| `tools/inject_api.py` | 进程内 OpenAI 入口 + 中继（已证明无效，留作对照） | 是 |
+| `tools/hook_chain.py` | hook connect/send/WSASend + EVP，追请求去向 | 是 |
+| `tools/hook_full.py` | 双向 TLS 明文完整落盘 | 是 |
+| `tools/full-body.bin` | 真实 105499 字节 chat 请求体（完整结构样本） | — |
 
 ---
 
@@ -238,16 +314,29 @@ MarvisHost.exe (Rust, PID 12712)
 
 ## 八、结论与建议
 
-在 HTTP 请求层绕过 1.60.3400 的风控，已经做尽且无解。三条现实路径：
+在 HTTP 请求层**新起一个请求**绕过 1.60.3400 的风控，已确认无解——
+15 项隔离实验全部穷尽（第四节）。但有了一条**可用**的路径：
 
-**A. 逆向 sctun 隧道**（唯一可能成功且仍是"原始 API"的路）
-需要逆向 `MarvisSvr.exe` 的隧道握手，复现隧道身份后即可直连上游。
-高成本、不确定。
+**A. 请求体就地替换（已验证 200）**
 
-**B. 接受现状，用新版客户端 + CDP 桥接**
-用 CDP 驱动客户端自身发消息并读回复，包装成 OpenAI 兼容接口。
-不是"直连原始 API"，但稳定可用。缺点是单线程、依赖 UI。
+`tools/inject_body.py`：Frida 注入 MarvisAgent，劫持 `httpx.AsyncClient.send`，
+在客户端发请求之前把 body 换成我们要的内容（同步更新 Content-Length）。
+请求头、连接、TLS、发送连续性全部沿用客户端的原始请求。
+
+已实测：写入 104 字节最小 body 后，客户端发消息返回 200，界面显示"收到"。
+
+用处是把客户端的**模型、工具、上下文**换成我们的调用内容——本质上就是拿到了
+可编程的模型入口，只是必须由一次真实的客户端发消息动作来搭载。
+
+限制：不能随时调用，每次都要有一次客户端侧的发消息动作。
+
+**B. 逆向发送连续性凭据（继续攻坚的方向）**
+
+既然 A 能用，说明凭据是在请求构造阶段注入的。下一步是定位它：
+hook `httpcore` 的连接发送路径（`httpcore._sync/http11.py` 的 `send_request_headers`
+/ `send_request_body`），或者 diff 同一个连接上连续两次请求的原始字节。
+找到那个每次请求递增的字段后，就能构造可自由调用的请求。
 
 **C. 等风控策略放松**
-历史上 `4100404` 是冷却型（记忆里记着"冷却后自愈"）。
-若腾讯只是阶段性收紧，过一段时间旧方案可能恢复。
+历史上 `4100404` 是冷却型。若腾讯只是阶段性收紧，旧方案可能恢复。
+
