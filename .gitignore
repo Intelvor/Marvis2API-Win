@@ -38,3 +38,10 @@ tools/pair-*.json
 tools/*-cap.jsonl
 tools/req.json
 tools/full-body.bin
+tools/mfree-tpl.json
+tools/mfree-cap.jsonl
+tools/mfree.log
+tools/free-tpl.json
+tools/free-*.log
+tools/probe*-*.txt
+tools/mf-req*.json

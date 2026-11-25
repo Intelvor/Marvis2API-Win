@@ -249,24 +249,32 @@ game_kb_search, create_custom_model, analyze_image, invoke_mcp_tool, list_mcp_to
 
 ---
 
-## 五、判定（修订）
+## 五、判定（最终修正）
 
-初版判定写成"走 `sctun` 隧道"，这是**错的**，已被实验推翻：hook `ws2_32!connect`
-显示 MarvisAgent 的唯一外部连接就是 `127.0.0.1:7897`（Clash 系统代理），
-chat 流量经代理直发 `yybadaccess.3g.qq.com`，与 `sctun` 无关。
-`MarvisSvr` 只承载心跳与 TRPC 控制面（日志里只见 `this is a pong from me`）。
+前两版的判定都错了，这里钉死真正的机制。
 
-修正后的判定：拦截在**请求对象的连续性**上。不是通道、不是 TLS 指纹、
-不是请求头、不是 uskey、不是 body 内容——这些全部单独隔离验证过（见第四节）。
+初版说是「`sctun` 隧道」——错。hook `ws2_32!connect` 显示 MarvisAgent
+唯一外连是 `127.0.0.1:7897`（Clash 代理），直发 `yybadaccess`，
+与 `MarvisSvr` 无关（那进程只在发心跳 `this is a pong from me`）。
 
-决定性对照：同一 client 实例、同一连接池、同一 TLS 会话、活请求头、
-现场新生成的 uskey、刷新过的 requestid，新起一个请求 → 403；
-而把客户端**正在发出的那个请求的 body 就地换掉** → 200。
+第二版说是「请求对象的连续性」——也错。后来证明新建 `httpx.Request`
+完全没问题（`A_body_only` 逐字节复制 body 新建对象，200）。
 
-结论：腾讯在 TLS 之下埋了一个只能由客户端自身产生的发送连续性凭据
-（发送序列号 / 请求计数的强绑定），新起的请求无论如何构造都拿不到它。
+**真正的机制：`Marvis-Response-ID` / `Ual-Access-Requestid` 是会话凭证。**
 
-**这解释了为什么文档初版把所有能想到的请求层要素都试遍了仍然 403。**
+- 自己生成新值 → 403（无论 body 多完整、多像）
+- 沿用客户端当次请求的原值 → 200
+
+验证链：
+
+| 实验 | body | response-id | 结果 |
+|---|---|---|---|
+| `base_asis` | 逐字节复制 105499 | **自己新生成** | 403 |
+| `A_body_only` | 逐字节复制 105499 | **沿用原值** | **200** |
+| `A_body_only`（改后） | 换成 105366（改了 user 内容） | **沿用原值** | **200** |
+| `inject_free` 自由调用 | 218 字节独立 body | **沿用已存的原值** | **200** |
+
+第 2、3 行证明 body 可以随便改；第 1、2 行证明 ID 绝不能动。
 
 ---
 
@@ -312,7 +320,63 @@ chat 流量经代理直发 `yybadaccess.3g.qq.com`，与 `sctun` 无关。
 
 ---
 
-## 八、可用方案（已端到端验证）
+## 八、最终结论：钥匙是 Marvis-Response-ID
+
+**B 路线走到底了。真正的风控开关只有一个：`Marvis-Response-ID` / `Ual-Access-Requestid`。**
+
+这两个字段是**会话凭证**，不是随机 UUID：
+
+- 自己生成新值 → **403**（无论 body 多完整）
+- 沿用客户端当次请求的原值 → **200**
+
+前面所有失败实验（成对请求、字节 diff、克隆 extensions、stream 对照、极简 body、原对象 vs 新对象）**全都带着「我自作主张刷新了这个 ID」这个错误**。逐字节复制的 `base_asis` 也 403，就是因为它换了个新 ID。
+
+### 免搭载通道（`tools/marvis_free.py`）
+
+只需客户端发**一次**消息拿凭证，之后完全自由调用：
+
+```bash
+python tools/marvis_free.py --inject    # 注入（需管理员）
+# 在客户端发一条消息（仅此一次）
+curl -X POST http://127.0.0.1:4891/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"main-auto","messages":[{"role":"user","content":"水的化学式"}]}'
+```
+
+实测返回：
+
+```json
+{"choices":[{"finish_reason":"stop","message":{"content":"\n\nH2O",
+ "reasoning_content":"Here's a thinking process: ..."}}]}
+```
+
+连续两次独立调用（"一年有几个季节" → "四"，"水的化学式" → "H2O"）均成功，
+**中间没有触发任何客户端动作**。
+
+### 为什么之前的 body 裁剪实验全部失效
+
+`inject_probe2.py` 那轮 8 个变体全 403，`base_asis`（逐字节原样）也 403 ——
+不是 body 的问题，是每个变体都重新生成了 response-id。
+教训：**做对照实验时，一次只改一个变量。我当时同时改了 body 和 ID。**
+
+### 两条可用通道对比
+
+| | `marvis_bridge.py` | `marvis_free.py` |
+|---|---|---|
+| 端口 | 4895 | 4891 |
+| 触发 | 每次需 CDP 搭载 | 只需一次 bootstrap |
+| 凭证 | 沿用客户端当次请求头 | 保存后用反复 |
+| 稳定性 | 高（body 结构完整） | 高（已连续验证） |
+| 界面痕迹 | 每次留一条 `·` 消息 | 无 |
+| 依赖 | 窗口可置前 + CDP | 仅需注入 |
+
+**推荐 `marvis_free.py`**：无界面干扰、可自由调用、可重复。
+
+### 凭证过期怎么办
+
+`Marvis-Response-ID` 可能随会话过期。失效表现为重新返回 403，
+此时在客户端发一条消息刷新凭证即可（`mfree-tpl.json` 会自动更新）。
+
 
 **Marvis 桥接器：`tools/marvis_bridge.py`**
 
