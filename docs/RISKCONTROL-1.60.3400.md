@@ -312,31 +312,65 @@ chat 流量经代理直发 `yybadaccess.3g.qq.com`，与 `sctun` 无关。
 
 ---
 
-## 八、结论与建议
+## 八、可用方案（已端到端验证）
 
-在 HTTP 请求层**新起一个请求**绕过 1.60.3400 的风控，已确认无解——
-15 项隔离实验全部穷尽（第四节）。但有了一条**可用**的路径：
+**Marvis 桥接器：`tools/marvis_bridge.py`**
 
-**A. 请求体就地替换（已验证 200）**
+标准 OpenAI 格式调用，返回真实模型回复：
 
-`tools/inject_body.py`：Frida 注入 MarvisAgent，劫持 `httpx.AsyncClient.send`，
-在客户端发请求之前把 body 换成我们要的内容（同步更新 Content-Length）。
-请求头、连接、TLS、发送连续性全部沿用客户端的原始请求。
+```bash
+# 1) 客户端须带 CDP 启动（tools/start-cdp-admin.ps1）
+# 2) 注入（需管理员）
+python tools/marvis_bridge.py --inject
+# 3) 起服务
+python tools/marvis_bridge.py --serve
+# 4) 调用
+curl -X POST http://127.0.0.1:4895/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"main-auto","messages":[{"role":"user","content":"你的问题"}]}'
+```
 
-已实测：写入 104 字节最小 body 后，客户端发消息返回 200，界面显示"收到"。
+实测返回：
 
-用处是把客户端的**模型、工具、上下文**换成我们的调用内容——本质上就是拿到了
-可编程的模型入口，只是必须由一次真实的客户端发消息动作来搭载。
+```json
+{"id":"chatcmpl-t1795611692747","object":"chat.completion","model":"main-auto",
+ "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant",
+ "content":"\n\n老板，一句话给你说清：DNS 就是网络里的「电话簿」，..."}}]}
+```
 
-限制：不能随时调用，每次都要有一次客户端侧的发消息动作。
+### 工作机制
 
-**B. 逆向发送连续性凭据（继续攻坚的方向）**
+两条链路拼接：
 
-既然 A 能用，说明凭据是在请求构造阶段注入的。下一步是定位它：
-hook `httpcore` 的连接发送路径（`httpcore._sync/http11.py` 的 `send_request_headers`
-/ `send_request_body`），或者 diff 同一个连接上连续两次请求的原始字节。
-找到那个每次请求递增的字段后，就能构造可自由调用的请求。
+1. **CDP 触发**（`tools/win_focus.py` + `tools/cdp_input.py`）
+   用 Win32 `SetWindowPos` 做 topmost 抖动把窗口置前（`Page.bringToFront`
+   在 Electron 里不抢系统焦点），再 `Input.dispatchMouseEvent` 点击
+   `.ProseMirror` 输入框，`Input.insertText` 写入，点
+   `[class*="footer-action-send"]` 发送。
 
-**C. 等风控策略放松**
-历史上 `4100404` 是冷却型。若腾讯只是阶段性收紧，旧方案可能恢复。
+2. **请求体结构替换**（Frida 注入 MarvisAgent 的 `httpx.AsyncClient.send`）
+   以客户端当次的真实 body 为模板，**只替换最后一条 user 消息**，
+   保留 system / tools / 参数 / memory 上下文。
+
+### 关键约束（踩坑记录）
+
+| 做法 | 结果 |
+|---|---|
+| body 换成 200 字节极简体 | **403**（结构异常会被拒） |
+| body 换成 104 字节极简体 | 曾偶然 200，不可复现 |
+| **保留完整结构，只换 user 消息** | **200** ✅ 稳定 |
+| 新建 `httpx.Request` 且手动塞 content-length | `LocalProtocolError` |
+| 新建 `httpx.Request` 且 pop 掉 content-length | 正常 |
+| Electron 里 `el.focus()` | 无效，`activeElement` 仍是 BODY |
+| Electron 里 `document.execCommand('insertText')` | 返回 false |
+| `Page.bringToFront` 后点击 | 无效，窗口仍在后台 |
+| **Win32 topmost 抖动 + 鼠标事件** | **有效** ✅ |
+| 重复注入时 `_marvis_orig_send` 被覆盖 | `RecursionError`，须重启 MarvisAgent |
+
+### 限制
+
+- 每次调用都要走一次客户端发消息动作，注入内容在界面上会以一条 `·` 消息出现
+- 依赖客户端窗口可被置前（不能最小化）
+- 单线程：并发请求会排队
+
 

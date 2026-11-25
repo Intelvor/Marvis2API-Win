@@ -29,3 +29,12 @@ __pycache__/
 .vscode/
 .idea/
 .cursor/
+
+# 桥接器运行时产物（含真实凭证）
+tools/bridge2-*.json
+tools/bridge2-*.jsonl
+tools/bridge2-*.log
+tools/pair-*.json
+tools/*-cap.jsonl
+tools/req.json
+tools/full-body.bin
