@@ -1,5 +1,16 @@
 # Marvis2API — Windows 从零部署手册
 
+> **⚠️ 本文档讲的是旧版 Bridge 方案（端口 4605）。**
+>
+> Marvis 1.60.3400 起上游加了风控，Bridge 直转发会被拒绝（`4100404`）。
+> **新装环境请直接看 [`QUICKSTART.md`](./QUICKSTART.md)**，用 `.\start.ps1` 一键启动 Hub（端口 4800）。
+>
+> 本文档保留给两种场景：
+> 1. 使用旧版 Marvis 客户端（1.60.3400 之前），Bridge 仍可直接用
+> 2. 想了解凭证获取（`scan-token`）与配置文件的底层细节
+>
+> Hub 方案的风控原理见 [`docs/RISKCONTROL-1.60.3400.md`](./docs/RISKCONTROL-1.60.3400.md)。
+
 本手册只讲 **Windows 系统** 的完整落地流程：装环境 → 取凭证 → 写配置 → 启动 → 验收 → 日常维护。
 全部脚本都是 `.ps1` / `.py`，不需要 macOS、不需要 dylib、不需要抓包证书。
 
@@ -209,8 +220,37 @@ New-NetFirewallRule -DisplayName "Marvis Bridge 4605" -Direction Inbound `
 .\undeploy.ps1                 # 停止
 .\deploy.ps1                   # 启动
 .\acceptance.ps1 5             # 快速体检
-.\tools\scan-token-admin.ps1   # token 过期时刷新凭证（会弹 UAC）
+.\tools\scan-token-admin.ps1   # token 过期 / 客户端升级后恢复（会弹 UAC）
 ```
+
+### 客户端升级后失效了怎么办
+
+Marvis 升级会动两个地方，任何一个没跟上都会被上游拒掉：
+
+| 变化 | 症状 | 谁去修 |
+|---|---|---|
+| 重新签发 `access_token`，旧 token 仍残留在内存 | `HTTP 401` + `code:4100403` | `pick_token.py` 逐个探测，只留可用的 |
+| `osVersion` / `clientVersion` 随版本变 | `HTTP 403` + `code:4100404`（0.2s 秒拒） | `sync_fingerprint.py` 从内存里的真实请求头同步 |
+
+**一条命令全恢复：**
+
+```powershell
+.\tools\scan-token-admin.ps1
+```
+
+它会：提权扫内存 → 抓真实请求头 → 逐个验证 token 挑出有效的 → 同步指纹 → 写配置 → 重启 → 打一次上游验证。输出末尾 `[test] HTTP 200` 即恢复完成。
+
+> 注意 `clientVersion` 不是安装包里 exe 的 FileVersion。实测 exe 为 `1.60.3300.540`，客户端实际发送 `1.60.3300.765`——按 exe 版本填会被 `4100404` 拦，所以必须从内存里的 `Ual-Access-MarvisExt` 原文取。
+
+单独排查时：
+
+```powershell
+powershell -File tools\dump-headers-admin.ps1   # 只抓请求头到 tools\header-dump.txt
+python tools\sync_fingerprint.py --check        # 只比对指纹，不写文件
+python tools\pick_token.py --file tools\token-scan.txt --dry-run   # 只列 token 候选
+```
+
+若 `[pick] 所有候选均被上游拒绝`：在 Marvis 客户端退出登录再重新登录，然后重跑。
 
 ---
 
@@ -230,6 +270,9 @@ New-NetFirewallRule -DisplayName "Marvis Bridge 4605" -Direction Inbound `
 | `tools/scan_proc_token.py` | 进程内存扫描器（被上面的 ps1 调用） |
 | `tools/apply_creds.py` | 凭证写入 + 自动发现 + 自测（被上面的 ps1 调用） |
 | `tools/dump_headers.py` | 从客户端内存提取真实请求头（排障用） |
+| `tools/dump-headers-admin.ps1` | 提权版：抓请求头到 `tools/header-dump.txt` |
+| `tools/pick_token.py` | 逐个探测候选 token，只留可用的 |
+| `tools/sync_fingerprint.py` | 从请求头同步 `os_version` / `client_version` |
 
 整个仓库就这些，没有 macOS 脚本、没有 dylib、没有抓包证书。
 
@@ -240,8 +283,10 @@ New-NetFirewallRule -DisplayName "Marvis Bridge 4605" -Direction Inbound `
 | 现象 | 含义 | 处理 |
 |---|---|---|
 | `HTTP 200` | 正常 | — |
-| `HTTP 401` + `code:4100403` | 登录态过期 / token 失效 | 跑 `.\tools\scan-token-admin.ps1` 刷新 |
-| `HTTP 403` + `code:4100404` | 风控拦截 | 见下「风控排查」 |
+| `HTTP 401` + `code:4100403` | 登录态过期 / 客户端升级换了 token | 跑 `.\tools\scan-token-admin.ps1`（会自动跳过内存里残留的旧 token） |
+| `HTTP 403` + `code:4100404` | 风控拦截 | 见下「风控排查」；客户端升级过就先跑一次 `scan-token-admin.ps1` 同步指纹 |
+| `[pick] 所有候选均被上游拒绝` | 确实没有可用登录态 | 在客户端重新登录后再跑 |
+| `[fp] dump 里没解析到 MarvisExt` | 客户端还没发过请求 | 在客户端里发一句话，重跑 |
 | `provider 启动失败` | 端口被占 / python 不在 PATH | 先 `.\undeploy.ps1` 再启；检查 `python --version` |
 | 扫描「未生成结果文件」 | UAC 被取消 | 重跑并点「是」 |
 | 扫描「未找到 access_token」 | token 尚未进内存 | 先在客户端发一句话再重跑 |

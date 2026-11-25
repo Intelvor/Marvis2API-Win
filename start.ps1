@@ -51,6 +51,14 @@ function Warn($msg) { Write-Host "    !   $msg" -ForegroundColor Yellow }
 function Bad($msg)  { Write-Host "    X   $msg" -ForegroundColor Red }
 function Info($msg) { Write-Host "        $msg" -ForegroundColor DarkGray }
 
+function Pause-Exit($code = 0) {
+    Write-Host ''
+    Write-Host '  按任意键关闭窗口...' -ForegroundColor DarkGray
+    try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
+    catch { $null = Read-Host }
+    exit $code
+}
+
 function Test-Port($p) {
     try {
         return (Test-NetConnection -ComputerName '127.0.0.1' -Port $p `
@@ -88,7 +96,7 @@ Write-Host '  ----------------------------------------' -ForegroundColor DarkGra
 Step 1 '检查环境'
 
 $Py = Get-Py
-if (-not $Py) { Bad '未找到 Python'; Read-Host '按回车退出'; exit 1 }
+if (-not $Py) { Bad '未找到 Python'; Pause-Exit 1 }
 Ok "Python $Py"
 
 $MarvisDir = 'D:\Program Files\Tencent\Marvis\Application'
@@ -98,11 +106,11 @@ if (Test-Path $MarvisDir) {
         -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
-if (-not $MarvisExe) { Bad '未找到 Marvis.exe'; Read-Host '按回车退出'; exit 1 }
+if (-not $MarvisExe) { Bad '未找到 Marvis.exe'; Pause-Exit 1 }
 Ok "客户端 $MarvisExe"
 
 if (-not (Test-Path (Join-Path $Root 'config.toml'))) {
-    Bad '缺少 config.toml'; Read-Host '按回车退出'; exit 1
+    Bad '缺少 config.toml'; Pause-Exit 1
 }
 Ok '配置文件就位'
 
@@ -160,8 +168,7 @@ if ($agentProc) {
     Ok "MarvisAgent 就绪（PID $($agentProc.Id -join ',')）"
 } else {
     Bad 'MarvisAgent 未启动，注入会失败'
-    Read-Host '按回车退出'
-    exit 1
+    Pause-Exit 1
 }
 
 # ---------------------------------------------------------------- 3. 注入通道
@@ -200,8 +207,7 @@ if (Test-Port 4512) {
         $agentProc = Get-Process MarvisAgent -ErrorAction SilentlyContinue
         if (-not $agentProc) {
             Bad 'MarvisAgent 未能重启，请手动重启客户端'
-            Read-Host '按回车退出'
-            exit 1
+            Pause-Exit 1
         }
         Ok "MarvisAgent 已重启（PID $($agentProc.Id -join ',')）"
     } else {
@@ -221,8 +227,7 @@ if (-not (Test-Port 4512)) {
     else {
         Bad '通道启动失败'
         if (Test-Path $err) { Get-Content $err -Tail 8 | ForEach-Object { Info $_ } }
-        Read-Host '按回车退出'
-        exit 1
+        Pause-Exit 1
     }
 }
 
@@ -316,5 +321,5 @@ if (-not $NoUI -and $ok4800) {
 
 if (-not $ok4512 -or -not $ok4800) {
     Warn '有服务未就绪，请查看 tools\ 下的日志'
-    Read-Host '按回车退出'
+    Pause-Exit 0
 }

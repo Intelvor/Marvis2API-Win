@@ -69,3 +69,6 @@ if ($Deep) {
 Write-Host ''
 Write-Host '  ----------------------------------------' -ForegroundColor DarkGray
 Write-Host ''
+Write-Host '  按任意键关闭窗口...' -ForegroundColor DarkGray
+try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
+catch { $null = Read-Host }

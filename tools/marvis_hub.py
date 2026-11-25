@@ -320,7 +320,10 @@ const $=id=>document.getElementById(id);
 function fmt(n){return n==null?'—':n.toLocaleString('en-US')}
 function dur(s){s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);
 return (h?h+'h ':'')+m+'m '+(s%60)+'s'}
+let _busy=false;
 async function tick(){
+  if(_busy){return}
+  _busy=true;
   try{
     const d=await (await fetch('/api/status')).json();
     const tk=d.tokens||{};
@@ -354,7 +357,8 @@ async function tick(){
       row(x.name,`<span class="dot ${x.status==200?'ok':'bad'}"></span>${x.status==200?'正常':'异常'} · ${x.path}`)).join('');
     $('log').innerHTML=(d.log||[]).map(l=>
       `<div><span class="t">${new Date(l.t*1000).toLocaleTimeString('zh-CN')}</span> ${l.msg}</div>`).join('')||'<div>暂无</div>';
-  }catch(e){$('alert').innerHTML='<div class="alert">无法连接本地服务</div>';}
+  }catch(e){$('alert').innerHTML='<div class="alert error">无法连接本地服务</div>';}
+  finally{_busy=false}
 }
 function row(a,b){return `<tr><td>${a}</td><td>${b}</td></tr>`}
 async function ping(){
@@ -363,7 +367,8 @@ async function ping(){
   }catch(e){alert('请求失败')}
   tick();
 }
-tick();setInterval(tick,3000);
+// 1 秒刷新：运行时长按秒走动，与刷新频率对齐
+tick();setInterval(tick,1000);
 </script></body></html>"""
 
 
