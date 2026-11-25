@@ -52,3 +52,8 @@ tools/auto-cap.jsonl
 tools/auto-need-refresh.flag
 tools/auto.*.log
 tools/a-req.json
+
+# Hub 运行时
+tools/hub.log
+tools/hub-stats.json
+tools/h-req.json

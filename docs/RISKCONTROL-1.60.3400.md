@@ -414,6 +414,118 @@ curl -X POST http://127.0.0.1:4512/v1/chat/completions \
 | 请求格式 | 完全兼容 OpenAI（messages / tools / tool_choice 透传） |
 | 响应格式 | 标准 `choices[].message`，含 `reasoning_content` |
 | 调用方式 | 纯 HTTP，可重复，可并发 |
+| 需人工介入 | 仅首次 bootstrap |
+| **模型选择** | **不能指定**，只认 `main-auto` |
+| 自动刷新副作用 | 每次刷新会在客户端留一条 `.` 消息 |
+
+**模型实测是 Qwen3**：连问 4 次身份，回答均为 `Qwen3` / `Qwen`，稳定。
+显式指定 `hy3` / `deepseek-v4-pro-external` / `ark_deepseek-v4-flash-ga-260731`
+一律 403。
+
+---
+
+## 十、可用接口清单与 Hub 面板
+
+### 实测可用的 /v3 接口
+
+签名算法（已验证 200）：
+
+```
+signature = md5(body + timestamp_ms + access_key + nonce)
+access_key = fpzkeTlcGLVP37qiOWd29MyaOqaJYxMi
+```
+
+必需头：`Ual-Access-Openid` / `Access-Token` / `Login-Type` / `Guid` /
+`Businessid: marvis_client` / `Login-Appid: 102033112` /
+`Requestid` / `Nonce` / `Timestamp` / `Signature`
+
+| 接口 | 用途 | 状态 |
+|---|---|---|
+| `/v3/marvis_get_wallet` | 余额（总额/已用/剩余） | **✓ 可用** |
+| `/v3/marvis_agentcore_tab_query_v1` | Agent 核心标签 | **✓ 可用** |
+| `/v3/get_marvis_notice` | 公告 | ✗ 400（用 pc_yyb 匿名，key 不同） |
+| `/v3/marvis_list_conversation_token_stats` | 会话 token 统计 | ✗ 403 |
+| `/v3/pcyyb_ai_assistant_model_gateway` | 模型网关 | ✗ 400（body 结构未知） |
+| `/v3/pcyyb_ai_assistant_create_embeddings` | 向量嵌入 | ✗ 400 |
+| `/v2/dynamicard_pcyyb` | 动态卡片 | 未测 |
+
+**余额接口实测返回**：
+
+```json
+{"code":0,"data":{"total_tokens":"10000000","used_tokens":"254866",
+ "frozen_tokens":"0","avail_tokens":"9745134","total_cost":0,"status":1}}
+```
+
+**重要**：`/v3` 也有频率限制 —— 连续调用前两次常返回 403，第三次才 200。
+所以必须内置重试（`v3_call` 里做了 3 次退避重试）。
+
+### Hub 面板
+
+`tools/marvis_hub.py`，端口 **4800**：
+
+```bash
+python tools/marvis_hub.py
+# 浏览器打开 http://127.0.0.1:4800
+```
+
+提供：
+
+| 路径 | 用途 |
+|---|---|
+| `/` | WebUI 面板 |
+| `/v1/chat/completions` | OpenAI 兼容对话（转发到 4512） |
+| `/v1/models` | 模型列表 |
+| `/v3/<path>` | 任意 v3 接口透传，支持 `?biz=` / `?auth=0` |
+| `/api/status` | 状态 JSON（额度/凭证/计数/诊断） |
+| `/api/apis` | 接口健康度 |
+| `/api/ping` | 一键触发凭证初始化 |
+
+**面板展示**：剩余额度 + 进度条、已用/总额、凭证状态（三色圆点）、
+运行时长、Chat/V3 调用统计、接口健康度、最近活动日志。
+
+**分级提示**（`hint` 字段）：
+
+| 情况 | 级别 | 处理 |
+|---|---|---|
+| 底层通道未运行 | error | 提示运行 `auto-start-admin.ps1` |
+| 凭证待初始化 | warn | CDP 可用时给「自动初始化」按钮，否则提示去客户端发消息 |
+| 凭证刷新中 | info | CDP 可用时自动处理 |
+| CDP 未开启 | info | 说明不影响对话，只影响自动续期 |
+| 一切正常 | ok | 不显示提示 |
+
+
+`tools/marvis_auto.py`，端口 **4512**：
+
+```bash
+# 一次性启动（注入 + 起服务 + 开 watchdog）
+tools/auto-start-admin.ps1
+
+# 之后就是普通 OpenAI 接口
+curl -X POST http://127.0.0.1:4512/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"main-auto","messages":[{"role":"user","content":"你好"}]}'
+```
+
+### 自愈机制
+
+凭证约 3 次调用失效。失效时：
+
+1. 服务检测到 403，置位 `auto-need-refresh.flag`
+2. watchdog 线程发现标记 → 调 CDP 在客户端自动发一条消息
+3. 注入钩子捕获新凭证写入 `auto-tpl.json`、清掉标记
+4. 服务重试原请求（最多 3 次）
+
+全过程调用方无感知。
+
+**实测：12 次连续调用，3 次自动刷新、3 次重试，最终 12/12 全部 200，零人工介入。**
+
+### 与裸模型 API 的真实差距
+
+| 项 | 状态 |
+|---|---|
+| 请求格式 | 完全兼容 OpenAI（messages / tools / tool_choice 透传） |
+| 响应格式 | 标准 `choices[].message`，含 `reasoning_content` |
+| 调用方式 | 纯 HTTP，可重复，可并发 |
 | 需人工介入 | 仅首次 bootstrap 发一条消息 |
 | **模型选择** | **不能指定**，只认 `main-auto`（服务端动态路由） |
 | 自动刷新副作用 | 每次刷新会在客户端留一条 `.` 消息，可能轻微影响同会话上下文 |
