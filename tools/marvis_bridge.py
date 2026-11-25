@@ -361,7 +361,11 @@ def _cdp_send_text(text: str) -> bool:
 
 
 def run_job(body: dict, tag: str, timeout: float = 180.0) -> dict:
-    """把任务放进槽，用 CDP 触发搭载，等结果。"""
+    """把任务放进槽，用 CDP 触发搭载，等结果。
+
+    注：现在已有 inject_free 的自由调用通道（复用客户端当前有效的
+    response-id，无需 CDP 触发）。本函数作为回退方案保留。
+    """
     if RESP.exists():
         RESP.unlink()
     SLOT.write_text(json.dumps({"pending": True, "tag": tag, "body": body},

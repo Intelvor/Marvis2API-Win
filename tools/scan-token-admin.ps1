@@ -42,12 +42,21 @@ if ($AllProcs) {
 }
 $procs = @($procs | Sort-Object -Unique)
 
-# ---- 提权扫描 ----
+# ---- 提权扫描（token + 真实请求头，一次提权全做完）----
 Remove-Item $out -ErrorAction SilentlyContinue
-$parts = foreach ($n in $procs) {
+$hdump = Join-Path $here 'header-dump.txt'
+Remove-Item $hdump -ErrorAction SilentlyContinue
+$scannerParts = foreach ($n in $procs) {
     'python "{0}" --name {1} --all --max-seconds 120 --pattern mv_ --pattern GZ01' -f $scanner, $n
 }
-$inner = 'cd /d "{0}" && ({1} & echo scan-done) > "{2}" 2>&1' -f $root, ($parts -join ' & '), $out
+# 顺带从内存抓真实请求头：升级后 osVersion/clientVersion 会变，只能从这里取。
+# 两段各自重定向到独立文件（嵌套重定向会被外层吞掉，别合并）。
+$dumpParts = @(
+    ('python "{0}" --name MarvisAgent.exe --key Ual-Access-MarvisExt --window 2000 --max 3' -f (Join-Path $here 'dump_headers.py')),
+    ('python "{0}" --name MarvisSvr.exe --key MarvisExt --window 2000 --max 3' -f (Join-Path $here 'dump_headers.py'))
+)
+$inner = 'cd /d "{0}" && ({1} & echo scan-done) > "{2}" 2>&1 & ({3}) > "{4}" 2>&1' -f `
+    $root, ($scannerParts -join ' & '), $out, ($dumpParts -join ' & '), $hdump
 Write-Host ('[scan] 目标进程: ' + ($procs -join ', '))
 Write-Host '[scan] 读取进程内存需要管理员权限，正在提权 ...'
 
@@ -88,8 +97,28 @@ foreach ($t in $tokens) {
 
 if ($NoApply) { Write-Host '[scan] -NoApply，不修改配置'; exit 0 }
 
-$token = $tokens[0]
-Write-Host ("[scan] 采用最长候选（len={0}）" -f $token.Length)
+# 不能按字典序/长度取 —— 升级后旧 token 会残留在内存里，实测排在前面的正是过期那个。
+# 唯一可靠判据是向上游发一次请求。
+Write-Host '[scan] 逐个验证候选 token（每个 1 请求）...'
+$picked = & $py (Join-Path $here 'pick_token.py') --file $out
+if ($LASTEXITCODE -ne 0 -or -not $picked) {
+    Write-Host '[scan] 没有可用 token。' -ForegroundColor Red
+    Write-Host '       若提示全部被拒：在 Marvis 客户端退出并重新登录后再跑本脚本。' -ForegroundColor Yellow
+    exit 1
+}
+$token = @($picked)[-1].ToString().Trim()
+Write-Host ("[scan] 选用有效 token（尾号 {0}）" -f $token.Substring($token.Length - 4))
+
+# 同步客户端指纹：升级后 osVersion/clientVersion 会变，不同步必被 4100404 拦
+if (Test-Path $hdump) {
+    Write-Host '[scan] 同步客户端指纹 ...'
+    & $py (Join-Path $here 'sync_fingerprint.py') --dump $hdump
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[scan] 指纹同步未完成（沿用现有配置继续）' -ForegroundColor Yellow
+    }
+} else {
+    Write-Host '[scan] 未抓到请求头，跳过指纹同步（若随后报 4100404，重跑本脚本）' -ForegroundColor Yellow
+}
 
 # openid / guid / qimei36 由 python 侧自动发现（目录名 + beacon 库），比命令行传参稳
 # --marvis-dir 仅在数据目录非标准位置时需要（文件夹重定向 / 便携版 / 多用户）

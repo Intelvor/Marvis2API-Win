@@ -151,7 +151,79 @@ try:
                 "rid": (tpl.get("marvis-response-id") or "")[:26],
             }).encode())
 
+        def do_ANY(self):
+            """把 /v3/* 等请求原样转发到上游，复用进程内身份。
+
+            用于探测模型列表这类需要 UAL 签名的接口。
+            路径 /fwd/<上游路径>，例如 /fwd/v3/pcyyb_ai_assistant_model_gateway
+            """
+            try:
+                n = int(self.headers.get("content-length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                path = self.path
+                if not path.startswith("/fwd/"):
+                    self._send(404, b'{"error":"use /fwd/<upstream-path>"}')
+                    return
+                up_path = path[len("/fwd"):]
+                base = "https://yybadaccess.3g.qq.com"
+                url = base + up_path
+
+                # 用客户端真实身份：完整 MarvisExt + 真实 token
+                with _lock:
+                    tpl = dict(_state.get("tpl") or {})
+                if not tpl:
+                    self._send(503, b'{"error":"no credential"}')
+                    return
+
+                # /v3 需要 UAL 签名；用业务头
+                import hashlib, random, tomllib, uuid
+                ACCESS_KEY = tomllib.load(open(BASE / "config.toml", "rb"))["marvis"]["access_key"]
+                ts = str(int(time.time() * 1000))
+                nonce = str(random.randint(1000000000, 9999999999))
+                txt = raw.decode("utf-8", "replace")
+                sig = hashlib.md5(
+                    (txt + ts + ACCESS_KEY + nonce).encode()).hexdigest()
+
+                bh = {
+                    "Host": "yybadaccess.3g.qq.com",
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate, zstd",
+                    "Connection": "keep-alive",
+                    "User-Agent": "python-httpx/0.28.1",
+                    "Ual-Access-Requestid": uuid.uuid4().hex,
+                    "Ual-Access-Businessid": self.headers.get(
+                        "x-businessid", "pc_yyb"),
+                    "Ual-Access-Guid": tpl.get("ual-access-guid", ""),
+                    "Ual-Access-Timestamp": ts,
+                    "Ual-Access-Nonce": nonce,
+                    "Ual-Access-Signature": sig,
+                    "Content-Type": "application/json; charset=UTF-8",
+                }
+
+                def go2():
+                    async def inner():
+                        async with httpx.AsyncClient(timeout=60.0,
+                                                     trust_env=True) as c:
+                            r = await c.request(self.command, url, headers=bh,
+                                                content=raw)
+                            return r.status_code, await r.aread()
+                    return asyncio.run(inner())
+
+                st, data = go2()
+                log({"stage": "fwd", "path": up_path, "status": st,
+                     "len": len(raw)})
+                self._send(st, data)
+            except Exception:
+                log({"stage": "fwd_err", "err": traceback.format_exc()[:600]})
+                self._send(500, b'{"error":"fwd failed"}')
+
+        do_PUT = do_ANY
+        do_DELETE = do_ANY
+
         def do_POST(self):
+            # /fwd/* 走转发通道，其余当 chat 处理
+            if self.path.startswith("/fwd/"):
+                return self.do_ANY()
             try:
                 n = int(self.headers.get("content-length") or 0)
                 raw = self.rfile.read(n) if n else b"{}"

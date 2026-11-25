@@ -32,11 +32,16 @@ import httpx
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parent.parent
-ACCESS_KEY = "fpzkeTlcGLVP37qiOWd29MyaOqaJYxMi"
 UP = "https://yybadaccess.3g.qq.com"
 AUTO = "http://127.0.0.1:4512"
 PORT = 4800
 STATS = ROOT / "tools" / "hub-stats.json"
+
+
+def _get_access_key() -> str:
+    """UAL 签名密钥，由 config.toml[marris].access_key 供给"""
+    import tomllib
+    return tomllib.load(open(ROOT / "config.toml", "rb"))["marvis"]["access_key"]
 
 _cfg: dict = {}
 _lock = threading.Lock()
@@ -63,6 +68,7 @@ def v3_headers(body: str, businessid: str = "marvis_client",
                auth: bool = True) -> dict:
     ts = str(int(time.time() * 1000))
     nonce = str(random.randint(10 ** 9, 10 ** 10 - 1))
+    ACCESS_KEY = _get_access_key()
     sig = hashlib.md5((body + ts + ACCESS_KEY + nonce).encode()).hexdigest()
     h = {
         "Host": "yybadaccess.3g.qq.com",

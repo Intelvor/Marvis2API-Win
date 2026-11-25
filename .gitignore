@@ -12,6 +12,7 @@ config.toml.local-bak
 
 # 扫描 / 抓取结果（含 token、uskey 明文）
 tools/token-scan.txt
+tools/v3-plain.txt
 tools/header-dump.txt
 tools/ual-real-headers.txt
 tools/*-dump.txt

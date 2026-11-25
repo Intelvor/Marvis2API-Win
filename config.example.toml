@@ -22,8 +22,10 @@ qimei36 = "<YOUR_QIMEI36>"
 uskey = ""
 
 # ---- 客户端指纹（Windows 客户端实测值，改了会被上游 4100404 风控拦下）----
-os_version = "Windows-10-10.0.26200"
-client_version = "1.60.2600.614"
+# 下面两个值随客户端版本升级而变，scan-token-admin.ps1 会自动从内存同步，无需手工维护。
+# 注意 client_version 不是 exe 的 FileVersion（实测 exe 1.60.3300.540 / 实际发送 1.60.3300.765）。
+os_version = "Windows-10-10.0.26300"
+client_version = "1.60.3300.765"
 # Windows 版不发送 clientPlatform / clientPlatformVersion，留空即省略这两个字段
 client_platform = ""
 client_platform_version = ""
@@ -50,6 +52,11 @@ api_key = ""
 # 为 true 时本机回环请求免密钥（本地脚本/验收无需带 key）；对局域网设备的请求一律校验。
 # 需要最严格管控时设为 false，此时连本机也必须带密钥。
 trust_loopback = true
+
+# ---- UAL 签名密钥（用于 /fwd/<upstream-path> 等需要 UAL 签名的接口）----
+# md5(body + timestamp_ms + access_key + nonce) -> signature
+# Windows 客户端实测值：fpzkeTlcGLVP37qiOWd29MyaOqaJYxMi；复制为 config.toml 后填入
+access_key = ""
 
 # ---- uskey provider ----
 uskey_provider_host = "127.0.0.1"
